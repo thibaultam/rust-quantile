@@ -5,7 +5,7 @@ use ::rand::distributions::{Distribution, Normal};
 use ::rand::rngs::StdRng;
 use ::rand::{Rng, SeedableRng};
 
-use quantile;
+use quantile::{Quantile, Stream};
 
 // Defines the distribution of the point to observe when building a stream.
 enum DistributionType {
@@ -77,10 +77,7 @@ fn test_quantile_too_high() {
 #[test]
 fn integration_test_simple() {
     let mut data: Vec<f64> = Vec::with_capacity(100);
-    let mut stream = quantile::new(vec![
-        quantile::new_quantile(0.5, 0.005),
-        quantile::new_quantile(0.9, 0.005),
-    ]);
+    let mut stream = Stream::new(vec![Quantile::new(0.5, 0.005), Quantile::new(0.9, 0.005)]);
 
     for i in 1..101 {
         stream.observe(i as f64);
@@ -98,11 +95,11 @@ fn integration_test_simple() {
 fn quantiles_uniformely_distributed() {
     let mut data = build_stream_uniform(DistributionType::Uniform);
 
-    let mut stream = quantile::new(vec![
-        quantile::new_quantile(0.1, 0.0001),
-        quantile::new_quantile(0.5, 0.01),
-        quantile::new_quantile(0.9, 0.005),
-        quantile::new_quantile(0.99, 0.0001),
+    let mut stream = Stream::new(vec![
+        Quantile::new(0.1, 0.0001),
+        Quantile::new(0.5, 0.01),
+        Quantile::new(0.9, 0.005),
+        Quantile::new(0.99, 0.0001),
     ]);
 
     for x in data.iter() {
@@ -121,11 +118,11 @@ fn quantiles_uniformely_distributed() {
 fn quantiles_normal_distribution() {
     let mut data = build_stream_uniform(DistributionType::Normal(3.0, 1.0));
 
-    let mut stream = quantile::new(vec![
-        quantile::new_quantile(0.1, 0.0001),
-        quantile::new_quantile(0.5, 0.01),
-        quantile::new_quantile(0.9, 0.005),
-        quantile::new_quantile(0.99, 0.0001),
+    let mut stream = Stream::new(vec![
+        Quantile::new(0.1, 0.0001),
+        Quantile::new(0.5, 0.01),
+        Quantile::new(0.9, 0.005),
+        Quantile::new(0.99, 0.0001),
     ]);
 
     for x in data.iter() {
