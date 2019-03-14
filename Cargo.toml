@@ -1,0 +1,8 @@
+[package]
+name = "quantile"
+version = "0.1.0"
+authors = ["thibaultam <lathib2@gmail.com>"]
+edition = "2018"
+
+[dev-dependencies]
+rand = "0.6.5"
