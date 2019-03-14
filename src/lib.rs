@@ -1,5 +1,8 @@
 #![allow(dead_code)] // TODO
 
+// TODO licence
+// TODO readme
+
 /*!
 This crate computes approximate quantiles with a predefined error margin
 over an unbounded data stream.
