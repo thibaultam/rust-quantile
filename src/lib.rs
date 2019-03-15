@@ -89,11 +89,14 @@ impl fmt::Debug for Quantile {
     }
 }
 
+const BUFFER_SIZE: usize = 500;
+
 /// `Stream` computes the requested quantiles for a stream of `f64`.
 pub struct Stream {
     targets: Vec<Quantile>,
     samples: Vec<Sample>,
     number_items: u64, // Number of items seen in the stream
+    buffer: Vec<f64>,  // Buffer to temporarily store the oberserved values
 }
 
 // A sample measurement with error for compression.
@@ -116,6 +119,7 @@ impl Stream {
             targets: quantiles,
             samples: Vec::new(),
             number_items: 0,
+            buffer: Vec::with_capacity(BUFFER_SIZE),
         }
     }
 
@@ -136,40 +140,52 @@ impl Stream {
 
     /// Adds a new value to the stream.
     pub fn observe(&mut self, value: f64) {
-        let mut r: f64 = 0.0;
+        self.buffer.push(value);
+        if self.buffer.len() == BUFFER_SIZE {
+            self.flush();
+        }
+    }
+
+    // Flush the buffer into the list of samples.
+    pub fn flush(&mut self) {
+        self.buffer.sort_by(|x, y| x.partial_cmp(y).unwrap());
+
         let mut idx = 0;
-        for sample in self.samples.iter() {
-            if sample.v > value {
-                break;
+        let mut r: f64 = 0.0;
+        for value in self.buffer.iter() {
+            let value = *value;
+            while idx < self.samples.len() && self.samples[idx].v <= value {
+                r += self.samples[idx].g;
+                idx += 1;
             }
-            r += sample.g;
-            idx += 1;
+
+            let new_sample: Sample;
+            if idx == 0 || idx == self.samples.len() {
+                new_sample = Sample {
+                    v: value,
+                    g: 1.0,
+                    d: 0,
+                };
+            } else {
+                new_sample = Sample {
+                    v: value,
+                    g: 1.0_f64,
+                    d: self.invariant(r).floor() as i64 - 1,
+                };
+            }
+            if idx == self.samples.len() {
+                self.samples.push(new_sample);
+            } else {
+                self.samples.insert(idx, new_sample);
+            }
+            self.number_items += 1;
         }
 
-        let new_sample: Sample;
-        if idx == 0 || idx == self.samples.len() {
-            new_sample = Sample {
-                v: value,
-                g: 1.0,
-                d: 0,
-            };
-        } else {
-            new_sample = Sample {
-                v: value,
-                g: 1.0_f64,
-                d: self.invariant(r).floor() as i64 - 1,
-            };
-        }
-        if idx == self.samples.len() {
-            self.samples.push(new_sample);
-        } else {
-            self.samples.insert(idx, new_sample);
-        }
-        self.number_items += 1;
+        self.buffer.clear();
+        self.compress();
     }
 
     // Remove useless records while keeping the requested quantiles within the error margin.
-    #[allow(dead_code)] // TODO
     fn compress(&mut self) {
         if self.samples.len() < 2 {
             return;
@@ -198,10 +214,12 @@ impl Stream {
     ///
     /// This will panic in debug mode only if the requested `target` is not a target defined when
     /// constructed the stream with [`new`](::Stream::new).
-    pub fn query(&self, quantile: f64) -> f64 {
+    pub fn query(&mut self, quantile: f64) -> f64 {
         debug_assert!(self.targets.iter().filter(|t| t.value == quantile).count() == 1,
             "The queried quantile {} should have been defined when constructing the stream (got: {:?})",
             quantile, &self.targets);
+
+        self.flush();
 
         if self.samples.is_empty() {
             return 0.0;
@@ -249,6 +267,7 @@ mod tests {
         stream.observe(3.0);
         stream.observe(7.0);
         stream.observe(6.0);
+        stream.flush();
 
         assert_samples_ordered(&stream);
 
@@ -273,6 +292,7 @@ mod tests {
         stream.observe(5.4);
         stream.observe(8.0);
         stream.observe(9.0);
+        stream.flush();
 
         stream.compress();
         assert_samples_ordered(&stream);
@@ -298,6 +318,7 @@ mod tests {
         stream.observe(8.0);
         stream.observe(10.0);
 
+        stream.flush();
         stream.compress();
         assert_samples_ordered(&stream);
 
@@ -359,7 +380,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn panic_if_query_an_untrack_quantile() {
-        let stream = Stream::new(vec![Quantile::new(0.9, 0.01)]);
+        let mut stream = Stream::new(vec![Quantile::new(0.9, 0.01)]);
         stream.query(0.5);
     }
 
