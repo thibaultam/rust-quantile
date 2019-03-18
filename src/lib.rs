@@ -43,9 +43,10 @@ assert_eq!(90.0_f64, stream.query(0.9));
 # Thread safety
 
 This implementation is NOT thread safe by design. To make it thread safe you must lock
-before using the public methods of the [`Stream`](::Stream).
+before using the public methods of the [`Stream`](struct.Stream.html).
 !*/
 
+use std::cell::RefCell;
 use std::fmt;
 
 /// The quantile that needs to be computed and its associated error margin,
@@ -95,12 +96,13 @@ const BUFFER_SIZE: usize = 500;
 pub struct Stream {
     targets: Vec<Quantile>,
     samples: Vec<Sample>,
+    new_samples: RefCell<Vec<Sample>>,
     number_items: u64, // Number of items seen in the stream
     buffer: Vec<f64>,  // Buffer to temporarily store the oberserved values
 }
 
 // A sample measurement with error for compression.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Sample {
     // v(i) in the paper, the value of this sample.
     v: f64,
@@ -118,6 +120,7 @@ impl Stream {
         Stream {
             targets: quantiles,
             samples: Vec::new(),
+            new_samples: RefCell::new(Vec::new()),
             number_items: 0,
             buffer: Vec::with_capacity(BUFFER_SIZE),
         }
@@ -142,23 +145,39 @@ impl Stream {
     pub fn observe(&mut self, value: f64) {
         self.buffer.push(value);
         if self.buffer.len() == BUFFER_SIZE {
-            self.flush();
+            self.flush_and_compress();
         }
     }
 
-    // Flush the buffer into the list of samples.
-    pub fn flush(&mut self) {
+    // Flushes the buffer containing the last observations into the list of samples.
+    // This function will iterate over both the actual samples and the new observations
+    // in self.buffer in ascending order. For each value it will merge it with the previous
+    // one if possible and insert it in a new vector.
+    // The usage of a new vector makes the insertion and removal (during a merge) of a sample
+    // non-expensive.
+    // The cost of the second array is limited as we keep the same array and use `Vec.clean()`
+    // to avoid allocating at each iteration.
+    pub fn flush_and_compress(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
         self.buffer.sort_by(|x, y| x.partial_cmp(y).unwrap());
 
         let mut idx = 0;
-        let mut r: f64 = 0.0;
+        // let mut new_samples: Vec<Sample> = self.new_samples.borrow_mut();
+        // Contains the sum of all the previous sample.g excluding the last one added,
+        // as it should not be taken into account in the merging of samples.
+        let mut prev_r = 0.0_f64;
+
         for value in self.buffer.iter() {
             let value = *value;
+            // Iterate over samples smaller than value
             while idx < self.samples.len() && self.samples[idx].v <= value {
-                r += self.samples[idx].g;
+                self.merge_and_insert(&self.samples[idx], &mut prev_r);
                 idx += 1;
             }
 
+            // Insert new value
             let new_sample: Sample;
             if idx == 0 || idx == self.samples.len() {
                 new_sample = Sample {
@@ -170,58 +189,66 @@ impl Stream {
                 new_sample = Sample {
                     v: value,
                     g: 1.0_f64,
-                    d: self.invariant(r).floor() as i64 - 1,
+                    d: self.invariant(prev_r + self.samples[idx].g).floor() as i64 - 1,
                 };
             }
-            if idx == self.samples.len() {
-                self.samples.push(new_sample);
-            } else {
-                self.samples.insert(idx, new_sample);
-            }
+            self.merge_and_insert(&new_sample, &mut prev_r);
             self.number_items += 1;
+        }
+        // Values after last insertion
+        while idx < self.samples.len() {
+            self.merge_and_insert(&self.samples[idx], &mut prev_r);
+            idx += 1;
         }
 
         self.buffer.clear();
-        self.compress();
+
+        std::mem::swap(&mut self.samples, &mut self.new_samples.borrow_mut());
+        self.new_samples.borrow_mut().clear();
     }
 
-    // Remove useless records while keeping the requested quantiles within the error margin.
-    fn compress(&mut self) {
-        if self.samples.len() < 2 {
+    // This function tries to merge the `current` sample with the last sample in
+    // `new_samples` if possible.
+    // It always inserts the `current` sample, either by adding it to the list or by merging it.
+    // In addition it will maintain the value of `prev_r` by adding the appropriate value to it
+    // when a merge occurs.
+    fn merge_and_insert(&self, current: &Sample, prev_r: &mut f64) {
+        let mut new_samples = self.new_samples.borrow_mut();
+        if new_samples.is_empty() {
+            new_samples.push(current.clone());
             return;
         }
-        let mut r = 0.0_f64;
-        let mut i = 0;
-        while i < self.samples.len() - 2 {
-            let current = &self.samples[i];
-            let next = &self.samples[i + 1];
-
-            if current.g + next.g + next.d as f64 <= self.invariant(r) {
-                println!("removing");
-                self.samples[i + 1].g += current.g;
-                self.samples.remove(i);
-            }
-            r += self.samples[i].g;
-            i += 1;
+        let last_idx = new_samples.len() - 1;
+        let prev = &mut new_samples[last_idx];
+        if prev.g + current.g + current.d as f64 <= self.invariant(*prev_r) {
+            // Merge
+            prev.g += current.g;
+            prev.v = current.v;
+            prev.d = current.d;
+        } else {
+            // Insert
+            *prev_r += prev.g;
+            new_samples.push(current.clone());
         }
     }
 
     /// Retrieve the value that is within the defined error margin around `quantile`.
     /// This will default to `0.0` as a convention if no value have been fed to this strean
-    /// using [`observe()`](::Stream::observe).
+    /// using [`observe()`](struct.Stream.html#method.observe).
     ///
     /// # panic
     ///
     /// This will panic in debug mode only if the requested `target` is not a target defined when
-    /// constructed the stream with [`new`](::Stream::new).
+    /// constructed the stream with [`new`](struct.Stream.html#method.new).
     pub fn query(&mut self, quantile: f64) -> f64 {
         debug_assert!(self.targets.iter().filter(|t| t.value == quantile).count() == 1,
             "The queried quantile {} should have been defined when constructing the stream (got: {:?})",
             quantile, &self.targets);
 
-        self.flush();
+        self.flush_and_compress();
 
         if self.samples.is_empty() {
+            println!("Empty");
             return 0.0;
         }
 
@@ -244,39 +271,9 @@ impl Stream {
 mod tests {
     use super::*;
 
-    // Check that the samples kept in the stream are ordered, an invariant of the
-    // algorithm.
-    fn assert_samples_ordered(stream: &Stream) {
-        let mut v = 0.0_f64;
-        for s in stream.samples.iter() {
-            if s.v < v {
-                panic!("Not sorted {:?}", stream.samples)
-            }
-            v = s.v;
-        }
-    }
-
     #[test]
-    fn insert_maintains_order() {
-        let mut stream = Stream::new(vec![Quantile::new(0.5, 0.1), Quantile::new(0.9, 0.01)]);
-
-        stream.observe(5.0);
-        stream.observe(4.0);
-        stream.observe(6.0);
-        stream.observe(4.0);
-        stream.observe(3.0);
-        stream.observe(7.0);
-        stream.observe(6.0);
-        stream.flush();
-
-        assert_samples_ordered(&stream);
-
-        assert_eq!(7, stream.number_items);
-    }
-
-    #[test]
-    fn test_compress() {
-        let mut stream = Stream::new(vec![Quantile::new(0.5, 0.1), Quantile::new(0.9, 0.1)]);
+    fn samples_should_be_maintain_ordered_and_compressed() {
+        let mut stream = Stream::new(vec![Quantile::new(0.5, 0.1)]);
 
         stream.observe(5.0);
         stream.observe(4.0);
@@ -292,46 +289,53 @@ mod tests {
         stream.observe(5.4);
         stream.observe(8.0);
         stream.observe(9.0);
-        stream.flush();
+        stream.flush_and_compress();
 
-        stream.compress();
-        assert_samples_ordered(&stream);
+        // Assert that the samples are ordered
+        let mut v = 0.0_f64;
+        for s in stream.samples.iter() {
+            if s.v < v {
+                panic!("Not sorted {:?}", stream.samples)
+            }
+            v = s.v;
+        }
 
-        println!("{:?}", stream.samples);
-        println!("len {}", stream.samples.len());
+        assert_eq!(
+            true,
+            stream.samples.len() < 14,
+            "Compression did not take place: got {} samples",
+            stream.samples.len()
+        );
 
-        assert_eq!(true, stream.samples.len() < 14);
+        assert_eq!(
+            stream.new_samples.borrow().len(),
+            0,
+            "New samples are not cleaned"
+        );
     }
 
     #[test]
     fn test_simple() {
-        let mut stream = Stream::new(vec![Quantile::new(0.5, 0.05), Quantile::new(0.9, 0.05)]);
+        let mut stream = Stream::new(vec![Quantile::new(0.5, 0.05), Quantile::new(0.95, 0.05)]);
 
         stream.observe(1.0);
         stream.observe(2.0);
         stream.observe(3.0);
-        stream.observe(6.0);
-        stream.observe(5.0);
         stream.observe(4.0);
-        stream.observe(9.1);
+        stream.observe(5.0);
+        stream.observe(6.0);
         stream.observe(7.0);
         stream.observe(8.0);
+        stream.observe(9.0);
         stream.observe(10.0);
 
-        stream.flush();
-        stream.compress();
-        assert_samples_ordered(&stream);
-
-        println!("{:?}", stream.samples);
-        println!("len {}", stream.samples.len());
-
         assert_eq!(5.0, stream.query(0.5));
+        assert_eq!(10.0, stream.query(0.95));
     }
 
     #[test]
     fn no_observation() {
         let mut stream = Stream::new(vec![Quantile::new(0.5, 0.05), Quantile::new(0.9, 0.05)]);
-        stream.compress();
         assert_eq!(0.0, stream.query(0.5));
     }
 
@@ -339,7 +343,6 @@ mod tests {
     fn one_observation() {
         let mut stream = Stream::new(vec![Quantile::new(0.5, 0.05), Quantile::new(0.9, 0.05)]);
         stream.observe(3.0);
-        stream.compress();
         assert_eq!(3.0, stream.query(0.5));
         assert_eq!(3.0, stream.query(0.9));
     }
@@ -349,7 +352,6 @@ mod tests {
         let mut stream = Stream::new(vec![Quantile::new(0.5, 0.05), Quantile::new(0.9, 0.05)]);
         stream.observe(3.0);
         stream.observe(5.0);
-        stream.compress();
         assert_eq!(5.0, stream.query(0.9));
     }
 

@@ -136,3 +136,28 @@ fn quantiles_normal_distribution() {
     assert_quantile_in_error(&data, 0.9, 0.05, stream.query(0.9));
     assert_quantile_in_error(&data, 0.99, 0.0001, stream.query(0.99));
 }
+
+#[test]
+fn random_data() {
+    for _i in 1..1000 {
+        let mut data = build_stream_uniform(DistributionType::Uniform);
+
+        let mut stream = Stream::new(vec![
+            Quantile::new(0.1, 0.0001),
+            Quantile::new(0.5, 0.01),
+            Quantile::new(0.9, 0.005),
+            Quantile::new(0.99, 0.0001),
+        ]);
+
+        for x in data.iter() {
+            stream.observe(*x);
+        }
+
+        data.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+        assert_quantile_in_error(&data, 0.1, 0.001, stream.query(0.1));
+        assert_quantile_in_error(&data, 0.5, 0.01, stream.query(0.5));
+        assert_quantile_in_error(&data, 0.9, 0.05, stream.query(0.9));
+        assert_quantile_in_error(&data, 0.99, 0.0001, stream.query(0.99));
+    }
+}
