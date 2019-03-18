@@ -3,6 +3,17 @@ name = "quantile"
 version = "0.1.0"
 authors = ["thibaultam <lathib2@gmail.com>"]
 edition = "2018"
+include = [
+    "lib.rs",
+    "Cargo.toml",
+    "README.md"
+]
+description="Compute approximate quantiles over large stream using low mempry and CPU" 
+licence="Apache-2.0"
+repository="https://github.com/thibaultam/rust-quantile"
+homepage="https://github.com/thibaultam/rust-quantile"
+readme="README.md"
+keywords = ["quantile", "percentile"]
 
 [dev-dependencies]
 rand = "0.6.5"
