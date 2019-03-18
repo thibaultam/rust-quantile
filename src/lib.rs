@@ -157,14 +157,13 @@ impl Stream {
     // non-expensive.
     // The cost of the second array is limited as we keep the same array and use `Vec.clean()`
     // to avoid allocating at each iteration.
-    pub fn flush_and_compress(&mut self) {
+    fn flush_and_compress(&mut self) {
         if self.buffer.is_empty() {
             return;
         }
         self.buffer.sort_by(|x, y| x.partial_cmp(y).unwrap());
 
         let mut idx = 0;
-        // let mut new_samples: Vec<Sample> = self.new_samples.borrow_mut();
         // Contains the sum of all the previous sample.g excluding the last one added,
         // as it should not be taken into account in the merging of samples.
         let mut prev_r = 0.0_f64;
